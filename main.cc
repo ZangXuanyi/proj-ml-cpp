@@ -246,6 +246,20 @@ static Points generate_dn_roots(std::size_t dim)
     return points;
 }
 
+static Points generate_a2_roots()
+{
+    Points points;
+    points.reserve(6);
+    double s = std::sqrt(3.0) / 2.0;
+    points.push_back({1.0, 0.0});
+    points.push_back({0.5, s});
+    points.push_back({-0.5, s});
+    points.push_back({-1.0, 0.0});
+    points.push_back({-0.5, -s});
+    points.push_back({0.5, -s});
+    return points;
+}
+
 static Points generate_e8_roots()
 {
     constexpr std::size_t dim = 8;
@@ -603,6 +617,11 @@ static Points generate_laminated_seed(std::size_t dim, std::string &label)
 
 static Points seed_points_for_dimension(std::size_t dim, std::string &label)
 {
+    if (dim == 2)
+    {
+        label = "A2 roots";
+        return generate_a2_roots();
+    }
     if (dim == 8)
     {
         label = "E8 roots";
@@ -642,7 +661,7 @@ static Points seed_points_for_dimension(std::size_t dim, std::string &label)
             return laminated;
         }
     }
-    if (dim >= 4)
+    if (dim >= 3)
     {
         label = "D" + std::to_string(dim) + " roots";
         return generate_dn_roots(dim);
