@@ -67,11 +67,16 @@ public:
     // 转成字符串的方法，便于打印
     std::string toString() const
     {
-        auto joined = coords | std::views::transform([](double c)
-                                                     { return std::format("{:.3f}", c); }) |
-                      std::views::join_with(std::string_view(", "));
-        return std::format("({})", std::ranges::to<std::string>(joined));
+        std::string out = "(";
+        for (std::size_t i = 0; i < coords.size(); ++i)
+        {
+            if (i) out += ", ";
+            out += std::format("{:.3f}", coords[i]);
+        }
+        out += ")";
+        return out;
     }
+
 };
 
 template <std::size_t N>
@@ -104,7 +109,7 @@ public:
         std::size_t sz = points.size();
         for (std::size_t i = 0; i < sz; ++i)
             for (std::size_t j = i + 1; j < sz; ++j)
-                if (points[i].squareDistanceTo(points[j]) <= 1) // 我是大笨蛋，一开始竟然写的4
+                if (points[i].squareDistanceTo(points[j]) < 1) // 我是大笨蛋，一开始竟然写的4
                     return false;
         return true;
     }
@@ -156,13 +161,18 @@ public:
         // }
     }
 
-    std::string toString() const // 转成字符串的方法，便于打印
+    std::string toString() const
     {
-        auto joined = points | std::views::transform([](const Point<N> &p)
-                                                     { return p.toString(); }) |
-                      std::views::join_with(std::string_view(", "));
-        return std::format("[{}]", std::ranges::to<std::string>(joined));
+        std::string out = "[";
+        for (std::size_t i = 0; i < points.size(); ++i)
+        {
+            if (i) out += ", ";
+            out += points[i].toString();
+        }
+        out += "]";
+        return out;
     }
+
 };
 
 template <std::size_t N>
