@@ -8,6 +8,37 @@
 #include <numeric>
 #include <cmath>
 #include <format>
+#include <limits>
+
+namespace pip {
+
+struct GAConfig
+{
+    std::size_t population_size = 80;
+    std::size_t elite_count = 4;
+    std::size_t max_points = 0;
+    double count_weight = 10000.0;
+    double min_dist2_weight = 100.0;
+    double penalty_weight_start = 5.0;
+    double penalty_weight_end = 50.0;
+    double target_dist2 = 1.0;
+    double mutation_rate = 0.15;
+    double mutation_sigma = 0.03;
+    double insert_rate = 0.25;
+    std::size_t insert_candidates = 200;
+    double delete_rate = 0.05;
+    std::size_t repair_steps = 30;
+    double repair_step = 0.02;
+    double crossover_keep_rate = 0.5;
+    double add_point_bonus_rate = 0.15;
+};
+
+struct FitnessStats
+{
+    double min_dist2 = 0.0;
+    double penalty = 0.0;
+    double score = 0.0;
+};
 
 template <std::size_t N>
 class Point // N维空间中的点，最好保证在球面上
@@ -36,6 +67,58 @@ public:
         {
             c /= norm;
         }
+    }
+
+    static Point randomOnSphere(std::mt19937 &gen)
+    {
+        std::normal_distribution<double> dist(0.0, 1.0);
+        std::array<double, N> arr{};
+        double norm_squared = 0.0;
+        for (std::size_t i = 0; i < N; ++i)
+        {
+            arr[i] = dist(gen);
+            norm_squared += arr[i] * arr[i];
+        }
+        double inv_norm = 1.0 / std::sqrt(norm_squared);
+        for (auto &v : arr)
+        {
+            v *= inv_norm;
+        }
+        return Point(arr);
+    }
+
+    void normalize()
+    {
+        double norm_squared = 0.0;
+        for (double v : coords)
+        {
+            norm_squared += v * v;
+        }
+        if (norm_squared == 0.0)
+        {
+            coords.fill(0.0);
+            coords[0] = 1.0;
+            return;
+        }
+        double inv_norm = 1.0 / std::sqrt(norm_squared);
+        for (auto &v : coords)
+        {
+            v *= inv_norm;
+        }
+    }
+
+    void jitter(double sigma, std::mt19937 &gen)
+    {
+        if (sigma <= 0.0)
+        {
+            return;
+        }
+        std::normal_distribution<double> noise(0.0, sigma);
+        for (auto &v : coords)
+        {
+            v += noise(gen);
+        }
+        normalize();
     }
 
     const std::array<double, N> &getCoords() const
@@ -114,51 +197,221 @@ public:
         return true;
     }
 
-    double fitness() const // 计算个体适应度
+    FitnessStats evaluate(const GAConfig &config, double penalty_weight) const
     {
-        if (!isValid())
-            return 0.0; // 非法解被淘汰
-        double fit = 0.0;
+        FitnessStats stats;
+        if (points.size() < 2)
+        {
+            stats.min_dist2 = 0.0;
+            stats.penalty = 0.0;
+            stats.score = config.count_weight * static_cast<double>(points.size());
+            return stats;
+        }
+
+        stats.min_dist2 = std::numeric_limits<double>::infinity();
         std::size_t sz = points.size();
         for (std::size_t i = 0; i < sz; ++i)
-            for (std::size_t j = i + 1; j < sz; ++j)
-                fit += points[i].squareDistanceTo(points[j]);
-        return fit / sz + sz * 1000.0; // 鼓励更多的点，同时考虑点之间的平均距离越大越好
-    }
-
-    void mutate(double mutationRate) // 个体变异
-    {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_real_distribution<> dis(0.0, 1.0);
-
-        if (points.empty())
-            return;
-
-        std::uniform_int_distribution<> pointDis(0, points.size() - 1);
-
-        // 随机替换一些点
-        for (std::size_t i = 0; i < points.size(); ++i)
         {
-            if (dis(gen) < mutationRate) // 以 mutationRate 的概率替换点
+            for (std::size_t j = i + 1; j < sz; ++j)
             {
-                points[i] = Point<N>();
+                double d2 = points[i].squareDistanceTo(points[j]);
+                stats.min_dist2 = std::min(stats.min_dist2, d2);
+                if (d2 < config.target_dist2)
+                {
+                    double gap = config.target_dist2 - d2;
+                    stats.penalty += gap * gap;
+                }
             }
         }
 
-        // 尝试添加新点
-        // 由于本项目的目标是尽可能多地放置点，因而我们极为鼓励添加新点的变异操作，所以这里的概率直接倍增
-        if (dis(gen) < mutationRate * 2.0)
+        stats.score = config.count_weight * static_cast<double>(points.size()) +
+                      config.min_dist2_weight * stats.min_dist2 -
+                      penalty_weight * stats.penalty;
+        return stats;
+    }
+
+    static std::size_t worst_point_index(const std::vector<Point<N>> &pts)
+    {
+        std::size_t n = pts.size();
+        if (n == 0)
         {
-            points.push_back(Point<N>());
+            return 0;
+        }
+        std::vector<double> min_d2(n, std::numeric_limits<double>::infinity());
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            for (std::size_t j = i + 1; j < n; ++j)
+            {
+                double d2 = pts[i].squareDistanceTo(pts[j]);
+                if (d2 < min_d2[i])
+                {
+                    min_d2[i] = d2;
+                }
+                if (d2 < min_d2[j])
+                {
+                    min_d2[j] = d2;
+                }
+            }
+        }
+        return static_cast<std::size_t>(std::min_element(min_d2.begin(), min_d2.end()) - min_d2.begin());
+    }
+
+    static Point<N> best_insert_candidate(const std::vector<Point<N>> &pts,
+                                          std::size_t candidates,
+                                          std::mt19937 &gen)
+    {
+        Point<N> best = Point<N>::randomOnSphere(gen);
+        double best_min = -1.0;
+        for (std::size_t i = 0; i < candidates; ++i)
+        {
+            Point<N> candidate = Point<N>::randomOnSphere(gen);
+            double min_d2 = std::numeric_limits<double>::infinity();
+            for (const auto &p : pts)
+            {
+                min_d2 = std::min(min_d2, candidate.squareDistanceTo(p));
+            }
+            if (min_d2 > best_min)
+            {
+                best_min = min_d2;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    void prune_to_size(std::size_t target_size)
+    {
+        while (points.size() > target_size && points.size() > 1)
+        {
+            std::size_t idx = worst_point_index(points);
+            points.erase(points.begin() + idx);
+        }
+    }
+
+    void repair(const GAConfig &config)
+    {
+        if (points.size() < 2 || config.repair_steps == 0)
+        {
+            return;
         }
 
-        // // 尝试删除点，实际上不需要，因为我们是从下往上计算的，所以点越多越好，肯定不允许删除点
-        // if (points.size() > 1 && dis(gen) < mutationRate)
-        // {
-        //     std::size_t idxToRemove = pointDis(gen);
-        //     points.erase(points.begin() + idxToRemove);
-        // }
+        std::vector<std::array<double, N>> forces(points.size());
+        for (std::size_t step = 0; step < config.repair_steps; ++step)
+        {
+            for (auto &f : forces)
+            {
+                f.fill(0.0);
+            }
+            for (std::size_t i = 0; i < points.size(); ++i)
+            {
+                for (std::size_t j = i + 1; j < points.size(); ++j)
+                {
+                    double d2 = points[i].squareDistanceTo(points[j]);
+                    if (d2 >= config.target_dist2)
+                    {
+                        continue;
+                    }
+                    double gap = config.target_dist2 - d2;
+                    double dist = std::sqrt(d2) + 1e-12;
+                    double scale = gap / dist;
+                    const auto &ci = points[i].getCoords();
+                    const auto &cj = points[j].getCoords();
+                    for (std::size_t k = 0; k < N; ++k)
+                    {
+                        double diff = ci[k] - cj[k];
+                        double push = diff * scale;
+                        forces[i][k] += push;
+                        forces[j][k] -= push;
+                    }
+                }
+            }
+            for (std::size_t i = 0; i < points.size(); ++i)
+            {
+                auto coords = points[i].getCoords();
+                for (std::size_t k = 0; k < N; ++k)
+                {
+                    coords[k] += config.repair_step * forces[i][k];
+                }
+                points[i] = Point<N>(coords);
+                points[i].normalize();
+            }
+        }
+    }
+
+    void mutate(const GAConfig &config, std::mt19937 &gen)
+    {
+        if (points.empty())
+        {
+            return;
+        }
+
+        std::uniform_real_distribution<double> uni(0.0, 1.0);
+
+        for (auto &p : points)
+        {
+            if (uni(gen) < config.mutation_rate)
+            {
+                p.jitter(config.mutation_sigma, gen);
+            }
+        }
+
+        if (uni(gen) < config.delete_rate && points.size() > 2)
+        {
+            std::size_t idx = worst_point_index(points);
+            points.erase(points.begin() + idx);
+        }
+
+        if (uni(gen) < config.insert_rate)
+        {
+            Point<N> candidate = best_insert_candidate(points, config.insert_candidates, gen);
+            points.push_back(candidate);
+        }
+    }
+
+    static Individual crossover(const Individual &a,
+                                const Individual &b,
+                                const GAConfig &config,
+                                std::mt19937 &gen)
+    {
+        std::uniform_real_distribution<double> uni(0.0, 1.0);
+        std::vector<Point<N>> child;
+        child.reserve(a.points.size() + b.points.size());
+
+        for (const auto &p : a.points)
+        {
+            if (uni(gen) < config.crossover_keep_rate)
+            {
+                child.push_back(p);
+            }
+        }
+        for (const auto &p : b.points)
+        {
+            if (uni(gen) < config.crossover_keep_rate)
+            {
+                child.push_back(p);
+            }
+        }
+        if (child.empty())
+        {
+            child.push_back(a.points.front());
+        }
+
+        std::size_t target = config.max_points;
+        if (target == 0)
+        {
+            target = std::max(a.points.size(), b.points.size());
+        }
+        if (uni(gen) < config.add_point_bonus_rate)
+        {
+            target += 1;
+        }
+        if (child.size() > target)
+        {
+            Individual temp(child);
+            temp.prune_to_size(target);
+            return temp;
+        }
+        return Individual(child);
     }
 
     std::string toString() const
@@ -182,123 +435,83 @@ private:
     std::vector<Individual<N>> individuals;
 
 public:
-    Population(std::size_t populationSize, std::size_t pointCount = 2 * N) // 初始化种群，默认每个个体包含2*N个点
+    Population(std::size_t populationSize,
+               const std::vector<Point<N>> &seed,
+               const GAConfig &config,
+               std::mt19937 &gen)
     {
-        // 先清空并预留空间
         individuals.clear();
         individuals.reserve(populationSize);
-
-        // 我突然反应过来：初始数据为什么真要随机生成呢？不如直接生成一个合法解，把它复制n次，剩下的交给变异和交叉！
-        // 这样的合法解可以用一个简单的规则来生成，比如d维度的情况下，放置2*N个点，分别在每个维度的+1和-1位置上
-        // 而且这些点之间的最小距离都至少是sqrt(2)>1，完全合法！
-        std::vector<Point<N>> initialPoints;
-        for (std::size_t dim = 0; dim < N; ++dim) // 按照上述逻辑生成初始点，并用这些点构造个体
+        if (!seed.empty())
         {
-            if (dim / 2 > pointCount)
-                break; // 如果点数已经够了就停止
-            std::array<double, N> posPlus = {};
-            std::array<double, N> posMinus = {};
-            posPlus[dim] = 1.0;
-            posMinus[dim] = -1.0;
-            initialPoints.emplace_back(posPlus);
-            initialPoints.emplace_back(posMinus);
+            individuals.emplace_back(seed);
         }
-
-        for (std::size_t i = 0; i < populationSize; ++i) // 复制若干次
+        while (individuals.size() < populationSize)
         {
-            individuals.emplace_back(initialPoints);
+            Individual<N> ind(seed);
+            ind.mutate(config, gen);
+            ind.repair(config);
+            individuals.push_back(std::move(ind));
         }
     }
 
-    const Individual<N> &getBestIndividual() const // 找到适应度最高的个体，相同返回第一个（其实是可以的）
+    const Individual<N> &getBestIndividual(const GAConfig &config, double penalty_weight) const
     {
         return *std::max_element(
             individuals.begin(), individuals.end(),
-            [](const Individual<N> &a, const Individual<N> &b)
+            [&](const Individual<N> &a, const Individual<N> &b)
             {
-                return a.fitness() < b.fitness();
+                return a.evaluate(config, penalty_weight).score <
+                       b.evaluate(config, penalty_weight).score;
             });
     }
 
-    void evolve(std::size_t generations, double mutationRate) // 进化若干代
+    void evolve(std::size_t generations, const GAConfig &config, std::mt19937 &gen)
     {
-        std::random_device rd;
-        std::mt19937 gen(rd());
+        if (individuals.empty())
+        {
+            return;
+        }
 
         for (std::size_t genIdx = 0; genIdx < generations; ++genIdx)
         {
-            // 评估适应度
-            std::vector<std::pair<double, Individual<N>>> fitnessIndividuals;
-            for (auto &ind : individuals)
-            {
-                fitnessIndividuals.emplace_back(ind.fitness(), ind);
-            }
+            double t = (generations > 1)
+                           ? static_cast<double>(genIdx) / static_cast<double>(generations - 1)
+                           : 1.0;
+            double penalty_weight = config.penalty_weight_start +
+                                    (config.penalty_weight_end - config.penalty_weight_start) * t;
 
-            // 按适应度排序
-            std::sort(fitnessIndividuals.begin(), fitnessIndividuals.end(),
+            std::vector<std::pair<double, Individual<N>>> ranked;
+            ranked.reserve(individuals.size());
+            for (const auto &ind : individuals)
+            {
+                ranked.emplace_back(ind.evaluate(config, penalty_weight).score, ind);
+            }
+            std::sort(ranked.begin(), ranked.end(),
                       [](const auto &a, const auto &b)
                       { return a.first > b.first; });
 
-            // 选择前半部分个体作为父代
-            std::vector<Individual<N>> newGeneration;
-            for (std::size_t i = 0; i < fitnessIndividuals.size() / 2; ++i)
+            std::vector<Individual<N>> next;
+            std::size_t elite = std::min(config.elite_count, ranked.size());
+            for (std::size_t i = 0; i < elite; ++i)
             {
-                newGeneration.push_back(fitnessIndividuals[i].second);
+                next.push_back(ranked[i].second);
             }
 
-            // 交叉生成新个体
-            std::uniform_int_distribution<> parentDis(0, newGeneration.size() - 1);
-            while (newGeneration.size() < individuals.size())
+            std::uniform_int_distribution<std::size_t> parent_dis(0, ranked.size() / 2);
+            while (next.size() < individuals.size())
             {
-                const Individual<N> &parent1 = newGeneration[parentDis(gen)];
-                const Individual<N> &parent2 = newGeneration[parentDis(gen)];
-
-                // 交叉：取两个父代的点混合
-                const auto &points1 = parent1.getPoints();
-                const auto &points2 = parent2.getPoints();
-
-                std::vector<Point<N>> childPoints;
-
-                // 取 parent1 的一半点
-                std::size_t half1 = points1.size() / 2;
-                childPoints.insert(childPoints.end(),
-                                   points1.begin(),
-                                   points1.begin() + half1);
-
-                // 取 parent2 的后一半点
-                std::size_t half2 = points2.size() / 2;
-                childPoints.insert(childPoints.end(),
-                                   points2.begin() + half2,
-                                   points2.end());
-                // 实际上这也挺粗糙的，感觉不如随机交叉，但这么写肯定够快（笑）
-
-                // 使用新的构造函数创建子代
-                Individual<N> child(childPoints);
-
-                newGeneration.push_back(child);
+                const Individual<N> &p1 = ranked[parent_dis(gen)].second;
+                const Individual<N> &p2 = ranked[parent_dis(gen)].second;
+                Individual<N> child = Individual<N>::crossover(p1, p2, config, gen);
+                child.mutate(config, gen);
+                child.repair(config);
+                next.push_back(std::move(child));
             }
 
-            // 变异
-            for (auto &ind : newGeneration)
-            {
-                ind.mutate(mutationRate);
-            }
-
-            // 确保上一代最佳个体被保留，这一个非常重要，确保进化肯定不会退步
-            newGeneration[0] = getBestIndividual();
-
-            // 因为点越多越好，所以子代中点的数量比亲代少的那部分被上一代最佳个体替换掉
-            // 当然这是一个非常粗糙且偷懒的做法，实际上可以设计得更好，例如随机插入点，直到合法为止
-            std::size_t minPointCount = getBestIndividual().getPointCount();
-            for (auto &ind : newGeneration)
-            {
-                while (ind.getPointCount() < minPointCount)
-                {
-                    ind.getPoints().emplace_back(Point<N>()); // 我们这里采取了直接添加随机点的做法
-                }
-            }
-
-            individuals = std::move(newGeneration);
+            individuals = std::move(next);
         }
     }
 };
+
+} // namespace pip
