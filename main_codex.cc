@@ -536,7 +536,7 @@ static Points generate_laminated_seed(std::size_t dim, std::string &label)
     std::string best_mode;
     double best_h = 0.0;
 
-    std::vector<double> heights = {0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85};
+    std::vector<double> heights = {0.50, 0.55, 0.60, 0.65, 0.70,0.73, 0.75, 0.77, 0.80, 0.85};
     std::size_t layer_attempts = 10 + dim * 2;
     std::size_t layer_restarts = 6 + dim / 4;
     std::size_t layer_steps = 80 + dim;
